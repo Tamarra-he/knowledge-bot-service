@@ -16,8 +16,7 @@ VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN", "")
 
 @app.route("/", methods=["GET"])
 def health():
-    logger.info("✅ 健康检查")
-    return "知识月报机器人运行正常 ✅", 200
+    return "OK", 200
 
 
 @app.route("/webhook", methods=["POST"])
