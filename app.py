@@ -155,7 +155,12 @@ def handle_doc_link(sender_id, doc_type, doc_token):
             send_reply(sender_id, f"❌ 生成失败：{result['error']}")
             return
         
+        logger.info(f"✅ 知识清单生成成功: {result['file_path']}, 共 {result['count']} 条")
+        
         send_reply(sender_id, f"✅ 知识清单生成完成！共 {result['count']} 条知识")
+        
+        # 尝试发送文件
+        logger.info(f"📤 开始发送文件: {result['file_path']}")
         send_file(sender_id, result["file_path"])
         
     except Exception as e:
@@ -294,43 +299,74 @@ def send_reply(open_id, text):
 
 
 def send_file(open_id, file_path):
+    """发送文件"""
     try:
         token = get_tenant_access_token()
         if not token:
             send_reply(open_id, "❌ 获取Token失败")
             return
         
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            send_reply(open_id, f"❌ 文件不存在: {file_path}")
+            return
+        
+        file_size = os.path.getsize(file_path)
+        file_name = Path(file_path).name
+        logger.info(f"📤 准备上传: {file_name}, 大小: {file_size} 字节")
+        
+        # 飞书限制：文件大小不超过 30MB
+        if file_size > 30 * 1024 * 1024:
+            send_reply(open_id, "❌ 文件超过30MB限制，请手动下载")
+            return
+        
+        # 1. 上传文件
         upload_url = "https://open.feishu.cn/open-apis/im/v1/files"
         headers = {"Authorization": f"Bearer {token}"}
-        file_name = Path(file_path).name
         
         with open(file_path, 'rb') as f:
             files = {'file': (file_name, f, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
             res = requests.post(upload_url, headers=headers, files=files, timeout=30)
         
         result = res.json()
+        logger.info(f"📤 上传响应: {result}")
+        
         if result.get("code") != 0:
+            error_msg = result.get("msg", "未知错误")
             logger.error(f"上传失败: {result}")
-            send_reply(open_id, "❌ 上传文件失败")
+            send_reply(open_id, f"❌ 上传文件失败: {error_msg}")
             return
         
         file_token = result.get("data", {}).get("file_token")
         if not file_token:
-            send_reply(open_id, "❌ 上传文件失败")
+            send_reply(open_id, "❌ 上传文件失败，未返回文件token")
             return
         
+        # 2. 发送文件消息
         send_url = "https://open.feishu.cn/open-apis/im/v1/messages"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        data = {"receive_id": open_id, "msg_type": "file", "content": json.dumps({"file_token": file_token})}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "receive_id": open_id,
+            "msg_type": "file",
+            "content": json.dumps({"file_token": file_token})
+        }
         
         res = requests.post(send_url, params={"receive_id_type": "open_id"}, headers=headers, json=data, timeout=10)
-        if res.json().get("code") == 0:
+        result = res.json()
+        
+        if result.get("code") == 0:
             logger.info("✅ 文件发送成功")
         else:
-            logger.error(f"发送文件失败: {res.json()}")
+            logger.error(f"发送文件失败: {result}")
+            send_reply(open_id, f"❌ 发送文件失败: {result.get('msg', '未知错误')}")
             
     except Exception as e:
         logger.error(f"发送文件异常: {e}")
+        import traceback
+        traceback.print_exc()
         send_reply(open_id, f"❌ 发送失败: {str(e)[:100]}")
 
 
