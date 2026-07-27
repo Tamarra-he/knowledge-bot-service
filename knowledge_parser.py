@@ -6,7 +6,6 @@
 """
 
 import os
-# 强制设置环境变量，避免 numpy 兼容性问题
 os.environ["NUMPY_EXPERIMENTAL_DTYPE_API"] = "1"
 
 import re
@@ -34,7 +33,9 @@ def parse_markdown_content(content_text):
     while i < len(lines):
         line = lines[i]
         
+        # 检测一级标题（# 标题）
         if re.match(r'^#{1}\s+', line) and not re.match(r'^#{2,}', line):
+            # 保存上一条知识
             if current_title is not None:
                 raw_content = '\n'.join(current_content).strip()
                 content_cleaned = remove_original_link_line(raw_content)
@@ -54,6 +55,7 @@ def parse_markdown_content(content_text):
                     '知识ID': knowledge_id
                 })
             
+            # 开始新知识
             current_title = re.sub(r'^#{1}\s+', '', line).strip()
             current_category = None
             current_content = []
@@ -61,13 +63,16 @@ def parse_markdown_content(content_text):
             i += 1
             continue
         
+        # 如果在标题内，检查分类行
         if in_title and current_title is not None:
+            # 检测分类行
             cat_match = re.match(r'^分类[:：]\s*(.*)$', line)
             if cat_match:
                 current_category = cat_match.group(1).strip()
                 i += 1
                 continue
             
+            # 检测分隔线 ---
             if re.match(r'^---\s*$', line):
                 if current_title is not None:
                     raw_content = '\n'.join(current_content).strip()
@@ -95,10 +100,12 @@ def parse_markdown_content(content_text):
                 i += 1
                 continue
             
+            # 普通内容行
             current_content.append(line)
         
         i += 1
     
+    # 处理最后一条知识（如果没有以 --- 结尾）
     if current_title is not None:
         raw_content = '\n'.join(current_content).strip()
         content_cleaned = remove_original_link_line(raw_content)
@@ -172,19 +179,26 @@ def generate_knowledge_list(md_content, original_filename=None):
     生成知识清单Excel
     """
     try:
+        print("=" * 60)
         print("📊 开始生成知识清单...")
         sys.stdout.flush()
         
+        # 🔍 调试：打印内容信息
+        print(f"📄 内容长度: {len(md_content)} 字符")
+        print(f"📄 内容前500字符:\n{md_content[:500]}")
+        sys.stdout.flush()
+        
+        # 解析
         knowledge_data = parse_markdown_content(md_content)
+        
+        print(f"📊 解析完成，共 {len(knowledge_data)} 条知识")
+        sys.stdout.flush()
         
         if not knowledge_data:
             return {
                 "success": False,
-                "error": "未能解析出任何知识条目"
+                "error": f"未能解析出任何知识条目。请检查文档格式是否符合：\n# 标题\n分类：xx/xx/xx\n内容...\n---"
             }
-        
-        print(f"📊 解析完成，共 {len(knowledge_data)} 条知识")
-        sys.stdout.flush()
         
         df = pd.DataFrame(knowledge_data)
         
