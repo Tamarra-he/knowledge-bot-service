@@ -75,9 +75,7 @@ def feishu_webhook():
         sender_id = sender.get("sender_id", {}).get("open_id")
         msg_type = message.get("message_type")
         
-        # =========================================================
         # 打印完整的消息结构用于调试
-        # =========================================================
         logger.info(f"📨 msg_type: {msg_type}")
         logger.info(f"📨 完整消息: {json.dumps(message, ensure_ascii=False, indent=2)}")
         
@@ -96,7 +94,6 @@ def feishu_webhook():
             content_raw = message.get("content", "{}")
             logger.info(f"📎 content_raw: {content_raw}")
             
-            # 尝试解析 content
             try:
                 content = json.loads(content_raw)
                 logger.info(f"📎 解析后的 content: {json.dumps(content, ensure_ascii=False)}")
@@ -105,43 +102,34 @@ def feishu_webhook():
                 send_reply(sender_id, "❌ 文件信息解析失败，请重新发送")
                 return {"status": "ok"}, 200
             
-            # 尝试从不同字段获取文件信息
             file_token = None
             file_name = None
             
-            # 方式1：直接从 content 获取
-            if content.get("file_token"):
-                file_token = content.get("file_token")
+            # 方式1：飞书实际使用的是 file_key
+            if content.get("file_key"):
+                file_token = content.get("file_key")
                 file_name = content.get("file_name", "")
                 logger.info(f"📎 方式1获取: file_token={file_token}, file_name={file_name}")
             
-            # 方式2：从 media 字段获取（飞书某些版本）
+            # 方式2：从 file_token 获取（兼容）
+            if not file_token and content.get("file_token"):
+                file_token = content.get("file_token")
+                file_name = content.get("file_name", "")
+                logger.info(f"📎 方式2获取: file_token={file_token}, file_name={file_name}")
+            
+            # 方式3：从 media 字段获取
             if not file_token and content.get("media"):
                 media = content.get("media")
                 if isinstance(media, dict):
-                    file_token = media.get("file_token") or media.get("media_id")
+                    file_token = media.get("file_key") or media.get("file_token") or media.get("media_id")
                     file_name = media.get("file_name", "")
-                    logger.info(f"📎 方式2获取: file_token={file_token}, file_name={file_name}")
-            
-            # 方式3：从附件字段获取
-            if not file_token and content.get("attachment"):
-                attachment = content.get("attachment")
-                if isinstance(attachment, dict):
-                    file_token = attachment.get("file_token") or attachment.get("media_id")
-                    file_name = attachment.get("file_name", "")
                     logger.info(f"📎 方式3获取: file_token={file_token}, file_name={file_name}")
             
-            # 方式4：直接从 content 取 media_id（飞书文件可能用 media_id）
-            if not file_token and content.get("media_id"):
-                file_token = content.get("media_id")
-                file_name = content.get("file_name", "")
-                logger.info(f"📎 方式4获取: file_token={file_token}, file_name={file_name}")
-            
-            # 方式5：从 content 取 file_id
+            # 方式4：从 file_id 获取
             if not file_token and content.get("file_id"):
                 file_token = content.get("file_id")
                 file_name = content.get("file_name", "")
-                logger.info(f"📎 方式5获取: file_token={file_token}, file_name={file_name}")
+                logger.info(f"📎 方式4获取: file_token={file_token}, file_name={file_name}")
             
             if not file_token:
                 logger.error("❌ 所有方式都无法获取 file_token")
