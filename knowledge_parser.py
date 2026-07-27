@@ -5,6 +5,10 @@
 功能：从帮助教程.md 内容生成 知识清单.xlsx
 """
 
+import os
+# 强制设置环境变量，避免 numpy 兼容性问题
+os.environ["NUMPY_EXPERIMENTAL_DTYPE_API"] = "1"
+
 import re
 import pandas as pd
 from pathlib import Path
@@ -18,12 +22,6 @@ sys.stdout.flush()
 def parse_markdown_content(content_text):
     """
     解析Markdown内容，提取结构化知识数据
-    
-    参数:
-        content_text: 帮助教程.md 的文本内容
-    
-    返回:
-        list: 知识条目列表，每条包含：标题、分类、内容、知识ID等
     """
     lines = content_text.split('\n')
     data = []
@@ -36,9 +34,7 @@ def parse_markdown_content(content_text):
     while i < len(lines):
         line = lines[i]
         
-        # 检测一级标题（# 标题）
         if re.match(r'^#{1}\s+', line) and not re.match(r'^#{2,}', line):
-            # 保存上一条知识
             if current_title is not None:
                 raw_content = '\n'.join(current_content).strip()
                 content_cleaned = remove_original_link_line(raw_content)
@@ -58,7 +54,6 @@ def parse_markdown_content(content_text):
                     '知识ID': knowledge_id
                 })
             
-            # 开始新知识
             current_title = re.sub(r'^#{1}\s+', '', line).strip()
             current_category = None
             current_content = []
@@ -66,16 +61,13 @@ def parse_markdown_content(content_text):
             i += 1
             continue
         
-        # 如果在标题内，检查分类行
         if in_title and current_title is not None:
-            # 检测分类行
             cat_match = re.match(r'^分类[:：]\s*(.*)$', line)
             if cat_match:
                 current_category = cat_match.group(1).strip()
                 i += 1
                 continue
             
-            # 检测分隔线 ---
             if re.match(r'^---\s*$', line):
                 if current_title is not None:
                     raw_content = '\n'.join(current_content).strip()
@@ -103,12 +95,10 @@ def parse_markdown_content(content_text):
                 i += 1
                 continue
             
-            # 普通内容行
             current_content.append(line)
         
         i += 1
     
-    # 处理最后一条知识（如果没有以 --- 结尾）
     if current_title is not None:
         raw_content = '\n'.join(current_content).strip()
         content_cleaned = remove_original_link_line(raw_content)
@@ -132,7 +122,7 @@ def parse_markdown_content(content_text):
 
 
 def extract_knowledge_id(content_text):
-    """从文章内容中提取知识ID（原文链接最后的数字）"""
+    """从文章内容中提取知识ID"""
     patterns = [
         r'原文链接[：:]\s*https?://[^\s]+/doc/(\d+)',
         r'原文链接[：:]\s*https?://[^\s]+/help/doc/(\d+)',
@@ -168,7 +158,6 @@ def parse_category_levels(category_str):
     third_category = parts[2] if len(parts) >= 3 else ''
     fourth_category = parts[3] if len(parts) >= 4 else ''
     
-    # 标准化文章类型
     if article_type:
         if '手册' in article_type:
             article_type = '文章'
@@ -181,45 +170,29 @@ def parse_category_levels(category_str):
 def generate_knowledge_list(md_content, original_filename=None):
     """
     生成知识清单Excel
-    
-    参数:
-        md_content: 帮助教程.md 的文本内容
-        original_filename: 原始文件名（用于生成输出文件名）
-    
-    返回:
-        dict: {
-            "success": True/False,
-            "file_path": "输出文件路径",
-            "count": 知识条数,
-            "error": "错误信息"
-        }
     """
     try:
         print("📊 开始生成知识清单...")
         sys.stdout.flush()
         
-        # 1. 解析MD
         knowledge_data = parse_markdown_content(md_content)
         
         if not knowledge_data:
             return {
                 "success": False,
-                "error": "未能解析出任何知识条目，请检查文件格式是否正确"
+                "error": "未能解析出任何知识条目"
             }
         
         print(f"📊 解析完成，共 {len(knowledge_data)} 条知识")
         sys.stdout.flush()
         
-        # 2. 转换为DataFrame
         df = pd.DataFrame(knowledge_data)
         
-        # 3. 生成文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("/app/data/output")
         output_dir.mkdir(parents=True, exist_ok=True)
         
         if original_filename:
-            # 从原始文件名提取月份信息
             month_match = re.search(r'(\d{4})[-_](\d{1,2})', original_filename)
             if month_match:
                 year = month_match.group(1)
@@ -232,7 +205,6 @@ def generate_knowledge_list(md_content, original_filename=None):
         
         output_path = output_dir / filename
         
-        # 4. 保存Excel
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='知识清单', index=False)
         
