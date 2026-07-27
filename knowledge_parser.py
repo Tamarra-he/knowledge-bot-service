@@ -9,7 +9,10 @@ import re
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-import uuid
+import sys
+
+print("📦 knowledge_parser 模块加载中...")
+sys.stdout.flush()
 
 
 def parse_markdown_content(content_text):
@@ -192,6 +195,9 @@ def generate_knowledge_list(md_content, original_filename=None):
         }
     """
     try:
+        print("📊 开始生成知识清单...")
+        sys.stdout.flush()
+        
         # 1. 解析MD
         knowledge_data = parse_markdown_content(md_content)
         
@@ -200,6 +206,9 @@ def generate_knowledge_list(md_content, original_filename=None):
                 "success": False,
                 "error": "未能解析出任何知识条目，请检查文件格式是否正确"
             }
+        
+        print(f"📊 解析完成，共 {len(knowledge_data)} 条知识")
+        sys.stdout.flush()
         
         # 2. 转换为DataFrame
         df = pd.DataFrame(knowledge_data)
@@ -227,6 +236,9 @@ def generate_knowledge_list(md_content, original_filename=None):
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='知识清单', index=False)
         
+        print(f"✅ 知识清单已保存: {output_path}")
+        sys.stdout.flush()
+        
         return {
             "success": True,
             "file_path": str(output_path),
@@ -236,7 +248,15 @@ def generate_knowledge_list(md_content, original_filename=None):
         }
         
     except Exception as e:
+        print(f"❌ 生成知识清单失败: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
         return {
             "success": False,
             "error": str(e)
         }
+
+
+print("✅ knowledge_parser 模块加载完成")
+sys.stdout.flush()
