@@ -57,166 +57,92 @@ def parse_category_levels(category_str):
 
 def parse_markdown_content(content_text):
     """
-    解析Markdown内容，提取结构化知识数据
-    支持两种格式：
-    1. # 标题 + 分类：xx/xx/xx + 内容
-    2. 原文链接：xxx + 分类：xx/xx/xx + 内容
+    解析Markdown内容，按原文链接分割知识块
+    格式：
+    标题1
+    原文链接：https://...
+    分类：xx/xx/xx
+    内容...
+    
+    标题2
+    原文链接：https://...
+    分类：xx/xx/xx
+    内容...
     """
     lines = content_text.split('\n')
     data = []
-    current_title = None
-    current_category = None
-    current_content = []
-    in_title = False
-    has_found_anything = False
     
     i = 0
     while i < len(lines):
         line = lines[i].strip() if i < len(lines) else ''
         
-        # =========================================================
-        # 方式1：检测 # 标题
-        # =========================================================
-        if re.match(r'^#{1}\s+', line) and not re.match(r'^#{2,}', line):
-            has_found_anything = True
-            # 保存上一条知识
-            if current_title is not None:
-                raw_content = '\n'.join(current_content).strip()
-                software_name, article_type, third_category, fourth_category = parse_category_levels(current_category)
-                
-                data.append({
-                    '标题': current_title,
-                    '完整分类': current_category or '',
-                    '软件名称': software_name,
-                    '文章类型': article_type,
-                    '三级分类': third_category,
-                    '四级分类': fourth_category,
-                    '内容': raw_content,
-                    '视频标注': '有视频' if 'mp4' in raw_content.lower() else '无视频',
-                    '知识ID': extract_knowledge_id(raw_content) or extract_knowledge_id(current_category)
-                })
+        # 检测原文链接行
+        link_match = re.match(r'^原文链接[：:]\s*(https?://[^\s]+)', line)
+        if link_match:
+            link_url = link_match.group(1)
+            knowledge_id = extract_knowledge_id(link_url)
             
-            current_title = re.sub(r'^#{1}\s+', '', line).strip()
-            current_category = None
-            current_content = []
-            in_title = True
-            i += 1
-            continue
-        
-        # =========================================================
-        # 方式2：检测 原文链接：
-        # =========================================================
-        link_match = re.match(r'^原文链接[：:]\s*(.*)$', line)
-        if link_match and not current_title:
-            has_found_anything = True
-            # 保存上一条知识
-            if current_content and current_title is None:
-                # 尝试从内容中提取标题
-                temp_content = '\n'.join(current_content).strip()
-                temp_lines = temp_content.split('\n')
-                temp_title = temp_lines[0] if temp_lines else "未命名"
-                software_name, article_type, third_category, fourth_category = parse_category_levels(current_category)
-                
-                data.append({
-                    '标题': temp_title,
-                    '完整分类': current_category or '',
-                    '软件名称': software_name,
-                    '文章类型': article_type,
-                    '三级分类': third_category,
-                    '四级分类': fourth_category,
-                    '内容': temp_content,
-                    '视频标注': '有视频' if 'mp4' in temp_content.lower() else '无视频',
-                    '知识ID': extract_knowledge_id(link_match.group(1))
-                })
+            # 提取标题（原文链接的上一行非空行）
+            title = "未命名"
+            j = i - 1
+            while j >= 0:
+                prev_line = lines[j].strip() if j < len(lines) else ''
+                if prev_line and not re.match(r'^原文链接[：:]', prev_line) and not re.match(r'^分类[：:]', prev_line):
+                    # 检查是否是标题（不以数字开头，不太长）
+                    if not re.match(r'^[\d]+[）).]', prev_line) and len(prev_line) < 100:
+                        title = prev_line
+                        break
+                j -= 1
             
-            current_title = None
-            current_category = None
-            current_content = []
-            current_content.append(line)  # 保留原文链接行
-            in_title = False
-            i += 1
-            continue
-        
-        # =========================================================
-        # 检测分类行
-        # =========================================================
-        cat_match = re.match(r'^分类[:：]\s*(.*)$', line)
-        if cat_match:
-            current_category = cat_match.group(1).strip()
-            # 如果当前没有标题，尝试从分类中提取软件名作为标题
-            if current_title is None:
-                parts = current_category.split('/')
-                if parts:
-                    current_title = parts[0].strip()
-            i += 1
-            continue
-        
-        # =========================================================
-        # 检测分隔线
-        # =========================================================
-        if re.match(r'^---\s*$', line) or re.match(r'^===\s*$', line):
-            if current_content or current_title:
-                raw_content = '\n'.join(current_content).strip()
-                if current_title is None:
-                    temp_lines = raw_content.split('\n')
-                    current_title = temp_lines[0] if temp_lines else "未命名"
-                
-                software_name, article_type, third_category, fourth_category = parse_category_levels(current_category)
-                data.append({
-                    '标题': current_title,
-                    '完整分类': current_category or '',
-                    '软件名称': software_name,
-                    '文章类型': article_type,
-                    '三级分类': third_category,
-                    '四级分类': fourth_category,
-                    '内容': raw_content,
-                    '视频标注': '有视频' if 'mp4' in raw_content.lower() else '无视频',
-                    '知识ID': extract_knowledge_id(raw_content) or extract_knowledge_id(current_category)
-                })
+            # 提取分类
+            category = ""
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].strip() if j < len(lines) else ''
+                cat_match = re.match(r'^分类[：:]\s*(.*)$', next_line)
+                if cat_match:
+                    category = cat_match.group(1).strip()
+                    break
+                j += 1
             
-            current_title = None
-            current_category = None
-            current_content = []
-            in_title = False
-            i += 1
-            continue
-        
-        # =========================================================
-        # 普通内容行
-        # =========================================================
-        if line:
-            current_content.append(line)
-        
-        i += 1
-    
-    # =========================================================
-    # 处理最后一条知识
-    # =========================================================
-    if current_content:
-        raw_content = '\n'.join(current_content).strip()
-        if raw_content:
-            if current_title is None:
-                temp_lines = raw_content.split('\n')
-                current_title = temp_lines[0] if temp_lines else "未命名"
+            # 提取内容（从分类之后到下一个原文链接之前）
+            content_parts = []
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].strip() if j < len(lines) else ''
+                # 如果遇到下一个原文链接，停止
+                if re.match(r'^原文链接[：:]\s*https?://', next_line):
+                    break
+                # 跳过分类行本身
+                if not re.match(r'^分类[：:]\s*', next_line):
+                    if next_line:
+                        content_parts.append(next_line)
+                j += 1
             
-            # 检查是否包含原文链接但没有标题
-            if '原文链接' in raw_content and current_title == "未命名":
-                link_match = re.search(r'原文链接[：:]\s*(https?://[^\s]+)', raw_content)
-                if link_match:
-                    current_title = f"知识_{extract_knowledge_id(link_match.group(1))}" if extract_knowledge_id(link_match.group(1)) else "未命名"
+            content = '\n'.join(content_parts).strip()
             
-            software_name, article_type, third_category, fourth_category = parse_category_levels(current_category)
+            # 解析分类层级
+            software_name, article_type, third_category, fourth_category = parse_category_levels(category)
+            
+            # 检测是否有视频
+            has_video = 'mp4' in content.lower() or '视频' in content
+            
             data.append({
-                '标题': current_title,
-                '完整分类': current_category or '',
+                '标题': title,
+                '完整分类': category,
                 '软件名称': software_name,
                 '文章类型': article_type,
                 '三级分类': third_category,
                 '四级分类': fourth_category,
-                '内容': raw_content,
-                '视频标注': '有视频' if 'mp4' in raw_content.lower() else '无视频',
-                '知识ID': extract_knowledge_id(raw_content) or extract_knowledge_id(current_category)
+                '内容': content,
+                '视频标注': '有视频' if has_video else '无视频',
+                '知识ID': knowledge_id
             })
+            
+            # 跳到下一个原文链接的位置
+            i = j
+        else:
+            i += 1
     
     return data
 
@@ -234,6 +160,11 @@ def generate_knowledge_list(md_content, original_filename=None):
         print(f"📄 内容前500字符:\n{md_content[:500]}")
         sys.stdout.flush()
         
+        # 统计原文链接数量
+        link_count = len(re.findall(r'原文链接[：:]\s*https?://', md_content))
+        print(f"📊 检测到 {link_count} 个原文链接")
+        sys.stdout.flush()
+        
         knowledge_data = parse_markdown_content(md_content)
         
         print(f"📊 解析完成，共 {len(knowledge_data)} 条知识")
@@ -242,8 +173,13 @@ def generate_knowledge_list(md_content, original_filename=None):
         if not knowledge_data:
             return {
                 "success": False,
-                "error": f"未能解析出任何知识条目。请检查文档格式是否包含 # 标题或 原文链接。"
+                "error": "未能解析出任何知识条目，请检查文档格式"
             }
+        
+        # 打印前3条预览
+        for idx, item in enumerate(knowledge_data[:3]):
+            print(f"  [{idx+1}] 标题: {item['标题']}, ID: {item['知识ID']}, 分类: {item['完整分类']}")
+        sys.stdout.flush()
         
         df = pd.DataFrame(knowledge_data)
         
