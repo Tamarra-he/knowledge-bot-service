@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 知识月报机器人 - 主服务
+支持：云文档链接读取、文件消息接收（备用）
 """
 
 import os
 import json
 import requests
 import logging
-import sys
+import re
 from pathlib import Path
 from flask import Flask, request
 
@@ -75,10 +76,6 @@ def feishu_webhook():
         sender_id = sender.get("sender_id", {}).get("open_id")
         msg_type = message.get("message_type")
         
-        # 打印完整的消息结构用于调试
-        logger.info(f"📨 msg_type: {msg_type}")
-        logger.info(f"📨 完整消息: {json.dumps(message, ensure_ascii=False, indent=2)}")
-        
         # 处理文本消息
         if msg_type == "text":
             content_raw = message.get("content", "{}")
@@ -87,61 +84,22 @@ def feishu_webhook():
             logger.info(f"💬 用户消息: {user_text}")
             return handle_text_message(sender_id, user_text)
         
-        # 处理文件消息
+        # 处理文件消息（备用，但可能因权限失败）
         elif msg_type == "file":
-            logger.info("📎 收到文件消息")
-            
+            logger.info("📎 收到文件消息（备用方式）")
             content_raw = message.get("content", "{}")
-            logger.info(f"📎 content_raw: {content_raw}")
+            content = json.loads(content_raw)
             
-            try:
-                content = json.loads(content_raw)
-                logger.info(f"📎 解析后的 content: {json.dumps(content, ensure_ascii=False)}")
-            except json.JSONDecodeError as e:
-                logger.error(f"📎 JSON解析失败: {e}")
-                send_reply(sender_id, "❌ 文件信息解析失败，请重新发送")
-                return {"status": "ok"}, 200
-            
-            file_token = None
-            file_name = None
-            
-            # 方式1：飞书实际使用的是 file_key
-            if content.get("file_key"):
-                file_token = content.get("file_key")
-                file_name = content.get("file_name", "")
-                logger.info(f"📎 方式1获取: file_token={file_token}, file_name={file_name}")
-            
-            # 方式2：从 file_token 获取（兼容）
-            if not file_token and content.get("file_token"):
-                file_token = content.get("file_token")
-                file_name = content.get("file_name", "")
-                logger.info(f"📎 方式2获取: file_token={file_token}, file_name={file_name}")
-            
-            # 方式3：从 media 字段获取
-            if not file_token and content.get("media"):
-                media = content.get("media")
-                if isinstance(media, dict):
-                    file_token = media.get("file_key") or media.get("file_token") or media.get("media_id")
-                    file_name = media.get("file_name", "")
-                    logger.info(f"📎 方式3获取: file_token={file_token}, file_name={file_name}")
-            
-            # 方式4：从 file_id 获取
-            if not file_token and content.get("file_id"):
-                file_token = content.get("file_id")
-                file_name = content.get("file_name", "")
-                logger.info(f"📎 方式4获取: file_token={file_token}, file_name={file_name}")
+            file_token = content.get("file_key") or content.get("file_token")
+            file_name = content.get("file_name", "")
             
             if not file_token:
-                logger.error("❌ 所有方式都无法获取 file_token")
-                send_reply(sender_id, "❌ 无法获取文件信息，请重新发送")
+                send_reply(sender_id, "❌ 无法获取文件信息，请改用云文档链接")
                 return {"status": "ok"}, 200
             
-            if not file_name:
-                file_name = "未知文件"
-            
-            return handle_file_message(sender_id, file_token, file_name)
+            send_reply(sender_id, "⚠️ 由于飞书权限限制，我无法下载你发送的文件。\n请改用云文档链接方式：\n1. 把文件上传到飞书云文档\n2. 把链接发给我")
+            return {"status": "ok"}, 200
         
-        # 其他消息类型（图片、音频等）
         else:
             logger.info(f"⏭️ 忽略消息类型: {msg_type}")
             return {"msg": "忽略"}, 200
@@ -160,13 +118,17 @@ def feishu_webhook():
 def handle_text_message(sender_id, text):
     """处理文本消息（命令）"""
     
+    # 帮助命令
     if text in ["/帮助", "/help"]:
         help_text = """📖 知识月报机器人使用帮助
 
-【使用方法】
-  1. 在知识后台导出 帮助教程.md
-  2. 把文件发给我
-  3. 我返回 知识清单.xlsx
+【推荐方式】云文档链接
+  1. 把 帮助教程.md 上传到飞书云文档
+  2. 复制文档链接发给我
+  3. 我自动读取并生成知识清单
+
+【备用方式】发送文件
+  直接发送 .md 文件（可能因权限失败）
 
 【命令】
   /帮助    - 显示本帮助
@@ -175,47 +137,47 @@ def handle_text_message(sender_id, text):
         send_reply(sender_id, help_text)
         return {"status": "ok"}, 200
     
+    # 检测是否是云文档链接
+    doc_match = re.search(r'https://[^\s]*feishu\.cn/(docx|sheets|wiki)/([^\s?]+)', text)
+    if doc_match:
+        doc_type = doc_match.group(1)
+        doc_token = doc_match.group(2).split('?')[0]
+        logger.info(f"📄 检测到云文档链接: type={doc_type}, token={doc_token}")
+        return handle_doc_link(sender_id, doc_type, doc_token, text)
+    
+    # 无意义消息
     else:
         reply = """👋 你好！我是知识文档解析助手。
 
-我能帮你把 .md 文件转成 Excel 知识清单。
+我能帮你把 帮助教程.md 转成 Excel 知识清单。
 
-试试这样用：
-1. 导出 帮助教程.md
-2. 把文件发给我
+【使用方法】
+1. 把 帮助教程.md 上传到飞书云文档
+2. 复制文档链接发给我
 3. 我返回 知识清单.xlsx
 
-发送 /帮助 查看完整帮助"""
+发送 /帮助 查看详细说明"""
         send_reply(sender_id, reply)
         return {"status": "ok"}, 200
 
 
-def handle_file_message(sender_id, file_token, file_name):
-    """处理文件消息"""
+def handle_doc_link(sender_id, doc_type, doc_token, full_text):
+    """处理云文档链接"""
     
-    logger.info("=" * 60)
-    logger.info(f"📎 开始处理文件: {file_name}")
-    logger.info(f"📎 file_token: {file_token}")
-    logger.info("=" * 60)
+    send_reply(sender_id, "📄 收到云文档链接，正在读取内容...")
     
-    # 1. 检查文件类型
-    if not file_name.lower().endswith(".md"):
-        send_reply(sender_id, f"❌ 暂不支持 {file_name} 格式，请发送 .md 文件")
+    # 1. 读取云文档内容
+    doc_content = read_feishu_document(doc_type, doc_token)
+    
+    if doc_content is None:
+        send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确")
         return {"status": "ok"}, 200
     
-    # 2. 下载文件
-    send_reply(sender_id, "📄 收到文件，正在下载...")
-    file_content = download_feishu_file(file_token)
-    
-    if file_content is None:
-        send_reply(sender_id, "❌ 文件下载失败，请稍后重试")
+    if len(doc_content.strip()) < 50:
+        send_reply(sender_id, "❌ 文档内容为空或过短，请检查文档内容")
         return {"status": "ok"}, 200
     
-    if not file_content or len(file_content.strip()) < 10:
-        send_reply(sender_id, "❌ 文件内容为空，请检查文件")
-        return {"status": "ok"}, 200
-    
-    # 3. 加载知识解析器（懒加载）
+    # 2. 加载知识解析器
     send_reply(sender_id, "📊 正在加载解析引擎，请稍候...")
     generate_knowledge_list = get_knowledge_parser()
     
@@ -223,19 +185,117 @@ def handle_file_message(sender_id, file_token, file_name):
         send_reply(sender_id, "❌ 解析引擎加载失败，请联系管理员")
         return {"status": "ok"}, 200
     
-    # 4. 生成知识清单
-    send_reply(sender_id, "📊 正在生成知识清单，请稍候...（文件较大可能需要1-2分钟）")
-    result = generate_knowledge_list(file_content, file_name)
+    # 3. 生成知识清单
+    send_reply(sender_id, "📊 正在生成知识清单，请稍候...")
+    result = generate_knowledge_list(doc_content, f"云文档_{doc_token}")
     
     if not result["success"]:
         send_reply(sender_id, f"❌ 生成失败：{result['error']}")
         return {"status": "ok"}, 200
     
-    # 5. 发送结果
+    # 4. 发送结果
     send_reply(sender_id, f"✅ 知识清单生成完成！共 {result['count']} 条知识")
     send_file(sender_id, result["file_path"])
     
     return {"status": "ok"}, 200
+
+
+# ==========================================
+# 飞书云文档API
+# ==========================================
+
+def read_feishu_document(doc_type, doc_token):
+    """
+    读取飞书云文档内容
+    
+    参数:
+        doc_type: docx(文档), sheets(表格), wiki(知识库)
+        doc_token: 文档token
+    
+    返回:
+        str: 文档内容（纯文本）
+    """
+    try:
+        token = get_tenant_access_token()
+        if not token:
+            logger.error("获取Token失败")
+            return None
+        
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        
+        # 新版云文档 API
+        if doc_type == "docx":
+            # 读取文档块
+            url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks"
+            res = requests.get(url, headers=headers, timeout=30)
+            
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 0:
+                    blocks = data.get("data", {}).get("items", [])
+                    # 提取纯文本
+                    text_parts = []
+                    for block in blocks:
+                        block_type = block.get("block_type", "")
+                        if block_type == 1:  # 文本块
+                            text = block.get("text", "")
+                            if text:
+                                text_parts.append(text)
+                        elif block_type == 2:  # 标题
+                            text = block.get("text", "")
+                            if text:
+                                text_parts.append(f"# {text}")
+                    content = "\n".join(text_parts)
+                    logger.info(f"📄 读取云文档成功，共 {len(content)} 字符")
+                    return content
+                else:
+                    logger.error(f"读取云文档失败: {data}")
+                    return None
+            else:
+                logger.error(f"读取云文档HTTP错误: {res.status_code}, {res.text}")
+                return None
+        
+        # 知识库（wiki）
+        elif doc_type == "wiki":
+            url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{doc_token}/nodes"
+            res = requests.get(url, headers=headers, timeout=30)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 0:
+                    nodes = data.get("data", {}).get("items", [])
+                    text_parts = []
+                    for node in nodes:
+                        title = node.get("title", "")
+                        if title:
+                            text_parts.append(f"# {title}")
+                    content = "\n".join(text_parts)
+                    return content
+            return None
+        
+        # 表格
+        elif doc_type == "sheets":
+            url = f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{doc_token}/values/Sheet1"
+            res = requests.get(url, headers=headers, timeout=30)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 0:
+                    values = data.get("data", {}).get("valueRange", {}).get("values", [])
+                    text_parts = []
+                    for row in values:
+                        text_parts.append(" | ".join([str(cell) for cell in row if cell]))
+                    content = "\n".join(text_parts)
+                    return content
+            return None
+        
+        else:
+            logger.error(f"不支持的文档类型: {doc_type}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"读取云文档异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 # ==========================================
@@ -254,34 +314,6 @@ def get_tenant_access_token():
             return None
     except Exception as e:
         logger.error(f"获取Token异常: {e}")
-        return None
-
-
-def download_feishu_file(file_token):
-    try:
-        token = get_tenant_access_token()
-        if not token:
-            return None
-        
-        url = f"https://open.feishu.cn/open-apis/im/v1/files/{file_token}"
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        logger.info(f"📥 正在下载文件: {file_token}")
-        res = requests.get(url, headers=headers, timeout=30)
-        
-        logger.info(f"📥 下载响应状态码: {res.status_code}")
-        
-        if res.status_code == 200:
-            content = res.text
-            logger.info(f"📥 文件大小: {len(content)} 字符")
-            return content
-        else:
-            logger.error(f"下载失败: {res.status_code}, {res.text[:200] if res.text else 'empty'}")
-            return None
-    except Exception as e:
-        logger.error(f"下载异常: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
 
