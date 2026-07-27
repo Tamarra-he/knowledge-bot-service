@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 知识月报机器人 - 主服务
-支持：云文档链接读取、文件消息接收（备用）
 """
 
 import os
@@ -12,6 +11,7 @@ import logging
 import re
 from pathlib import Path
 from flask import Flask, request
+import threading
 
 # 配置日志
 logging.basicConfig(
@@ -28,10 +28,9 @@ VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN")
 
 
 # ==========================================
-# 懒加载函数：只在需要时导入 knowledge_parser
+# 懒加载函数
 # ==========================================
 def get_knowledge_parser():
-    """延迟加载 knowledge_parser 模块"""
     try:
         from knowledge_parser import generate_knowledge_list
         logger.info("✅ knowledge_parser 加载成功")
@@ -82,22 +81,43 @@ def feishu_webhook():
             content = json.loads(content_raw)
             user_text = content.get("text", "").strip()
             logger.info(f"💬 用户消息: {user_text}")
-            return handle_text_message(sender_id, user_text)
-        
-        # 处理文件消息（备用，但可能因权限失败）
-        elif msg_type == "file":
-            logger.info("📎 收到文件消息（备用方式）")
-            content_raw = message.get("content", "{}")
-            content = json.loads(content_raw)
             
-            file_token = content.get("file_key") or content.get("file_token")
-            file_name = content.get("file_name", "")
-            
-            if not file_token:
-                send_reply(sender_id, "❌ 无法获取文件信息，请改用云文档链接")
+            # 检测是否是云文档链接
+            doc_match = re.search(r'https://[^\s]*feishu\.cn/(docx|sheets|wiki)/([^\s?]+)', user_text)
+            if doc_match:
+                doc_type = doc_match.group(1)
+                doc_token = doc_match.group(2).split('?')[0]
+                # 异步处理云文档（避免超时）
+                threading.Thread(target=handle_doc_link, args=(sender_id, doc_type, doc_token)).start()
                 return {"status": "ok"}, 200
             
-            send_reply(sender_id, "⚠️ 由于飞书权限限制，我无法下载你发送的文件。\n请改用云文档链接方式：\n1. 把文件上传到飞书云文档\n2. 把链接发给我")
+            # 处理命令
+            if user_text in ["/帮助", "/help"]:
+                help_text = """📖 知识月报机器人使用帮助
+
+【使用方法】
+  1. 把 帮助教程.md 上传到飞书云文档
+  2. 复制文档链接发给我
+  3. 我返回 知识清单.xlsx
+
+【命令】
+  /帮助    - 显示本帮助"""
+                send_reply(sender_id, help_text)
+            else:
+                reply = """👋 你好！我是知识文档解析助手。
+
+📌 请把 帮助教程.md 上传到飞书云文档，然后把链接发给我。
+
+发送 /帮助 查看详细说明"""
+                send_reply(sender_id, reply)
+            
+            return {"status": "ok"}, 200
+        
+        # 处理文件消息 - 直接告诉用户改用云文档
+        elif msg_type == "file":
+            logger.info("📎 收到文件消息（不再处理）")
+            # 不下载文件，直接提示用户
+            send_reply(sender_id, "⚠️ 请改用云文档方式：\n\n1. 把 帮助教程.md 上传到飞书云文档\n2. 复制文档链接发给我\n\n这样我才能读取内容并生成知识清单。")
             return {"status": "ok"}, 200
         
         else:
@@ -112,92 +132,47 @@ def feishu_webhook():
 
 
 # ==========================================
-# 消息处理函数
+# 云文档处理函数（异步执行）
 # ==========================================
 
-def handle_text_message(sender_id, text):
-    """处理文本消息（命令）"""
-    
-    # 帮助命令
-    if text in ["/帮助", "/help"]:
-        help_text = """📖 知识月报机器人使用帮助
-
-【推荐方式】云文档链接
-  1. 把 帮助教程.md 上传到飞书云文档
-  2. 复制文档链接发给我
-  3. 我自动读取并生成知识清单
-
-【备用方式】发送文件
-  直接发送 .md 文件（可能因权限失败）
-
-【命令】
-  /帮助    - 显示本帮助
-
-有问题请联系管理员。"""
-        send_reply(sender_id, help_text)
-        return {"status": "ok"}, 200
-    
-    # 检测是否是云文档链接
-    doc_match = re.search(r'https://[^\s]*feishu\.cn/(docx|sheets|wiki)/([^\s?]+)', text)
-    if doc_match:
-        doc_type = doc_match.group(1)
-        doc_token = doc_match.group(2).split('?')[0]
-        logger.info(f"📄 检测到云文档链接: type={doc_type}, token={doc_token}")
-        return handle_doc_link(sender_id, doc_type, doc_token, text)
-    
-    # 无意义消息
-    else:
-        reply = """👋 你好！我是知识文档解析助手。
-
-我能帮你把 帮助教程.md 转成 Excel 知识清单。
-
-【使用方法】
-1. 把 帮助教程.md 上传到飞书云文档
-2. 复制文档链接发给我
-3. 我返回 知识清单.xlsx
-
-发送 /帮助 查看详细说明"""
-        send_reply(sender_id, reply)
-        return {"status": "ok"}, 200
-
-
-def handle_doc_link(sender_id, doc_type, doc_token, full_text):
-    """处理云文档链接"""
-    
-    send_reply(sender_id, "📄 收到云文档链接，正在读取内容...")
-    
-    # 1. 读取云文档内容
-    doc_content = read_feishu_document(doc_type, doc_token)
-    
-    if doc_content is None:
-        send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确")
-        return {"status": "ok"}, 200
-    
-    if len(doc_content.strip()) < 50:
-        send_reply(sender_id, "❌ 文档内容为空或过短，请检查文档内容")
-        return {"status": "ok"}, 200
-    
-    # 2. 加载知识解析器
-    send_reply(sender_id, "📊 正在加载解析引擎，请稍候...")
-    generate_knowledge_list = get_knowledge_parser()
-    
-    if generate_knowledge_list is None:
-        send_reply(sender_id, "❌ 解析引擎加载失败，请联系管理员")
-        return {"status": "ok"}, 200
-    
-    # 3. 生成知识清单
-    send_reply(sender_id, "📊 正在生成知识清单，请稍候...")
-    result = generate_knowledge_list(doc_content, f"云文档_{doc_token}")
-    
-    if not result["success"]:
-        send_reply(sender_id, f"❌ 生成失败：{result['error']}")
-        return {"status": "ok"}, 200
-    
-    # 4. 发送结果
-    send_reply(sender_id, f"✅ 知识清单生成完成！共 {result['count']} 条知识")
-    send_file(sender_id, result["file_path"])
-    
-    return {"status": "ok"}, 200
+def handle_doc_link(sender_id, doc_type, doc_token):
+    """处理云文档链接（异步）"""
+    try:
+        send_reply(sender_id, "📄 收到云文档链接，正在读取内容...")
+        
+        # 1. 读取云文档内容
+        doc_content = read_feishu_document(doc_type, doc_token)
+        
+        if doc_content is None:
+            send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确")
+            return
+        
+        if len(doc_content.strip()) < 50:
+            send_reply(sender_id, "❌ 文档内容为空或过短，请检查文档内容")
+            return
+        
+        # 2. 加载知识解析器
+        generate_knowledge_list = get_knowledge_parser()
+        
+        if generate_knowledge_list is None:
+            send_reply(sender_id, "❌ 解析引擎加载失败，请联系管理员")
+            return
+        
+        # 3. 生成知识清单
+        send_reply(sender_id, "📊 正在生成知识清单，请稍候...")
+        result = generate_knowledge_list(doc_content, f"云文档_{doc_token}")
+        
+        if not result["success"]:
+            send_reply(sender_id, f"❌ 生成失败：{result['error']}")
+            return
+        
+        # 4. 发送结果
+        send_reply(sender_id, f"✅ 知识清单生成完成！共 {result['count']} 条知识")
+        send_file(sender_id, result["file_path"])
+        
+    except Exception as e:
+        logger.error(f"处理云文档异常: {e}")
+        send_reply(sender_id, f"❌ 处理失败: {str(e)[:100]}")
 
 
 # ==========================================
@@ -205,16 +180,7 @@ def handle_doc_link(sender_id, doc_type, doc_token, full_text):
 # ==========================================
 
 def read_feishu_document(doc_type, doc_token):
-    """
-    读取飞书云文档内容
-    
-    参数:
-        doc_type: docx(文档), sheets(表格), wiki(知识库)
-        doc_token: 文档token
-    
-    返回:
-        str: 文档内容（纯文本）
-    """
+    """读取飞书云文档内容"""
     try:
         token = get_tenant_access_token()
         if not token:
@@ -223,9 +189,7 @@ def read_feishu_document(doc_type, doc_token):
         
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         
-        # 新版云文档 API
         if doc_type == "docx":
-            # 读取文档块
             url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks"
             res = requests.get(url, headers=headers, timeout=30)
             
@@ -233,18 +197,14 @@ def read_feishu_document(doc_type, doc_token):
                 data = res.json()
                 if data.get("code") == 0:
                     blocks = data.get("data", {}).get("items", [])
-                    # 提取纯文本
                     text_parts = []
                     for block in blocks:
-                        block_type = block.get("block_type", "")
-                        if block_type == 1:  # 文本块
-                            text = block.get("text", "")
-                            if text:
-                                text_parts.append(text)
-                        elif block_type == 2:  # 标题
-                            text = block.get("text", "")
-                            if text:
-                                text_parts.append(f"# {text}")
+                        # 获取块内容
+                        block_id = block.get("block_id")
+                        # 简单获取文本
+                        text = block.get("text", "")
+                        if text:
+                            text_parts.append(text)
                     content = "\n".join(text_parts)
                     logger.info(f"📄 读取云文档成功，共 {len(content)} 字符")
                     return content
@@ -252,10 +212,9 @@ def read_feishu_document(doc_type, doc_token):
                     logger.error(f"读取云文档失败: {data}")
                     return None
             else:
-                logger.error(f"读取云文档HTTP错误: {res.status_code}, {res.text}")
+                logger.error(f"读取云文档HTTP错误: {res.status_code}")
                 return None
         
-        # 知识库（wiki）
         elif doc_type == "wiki":
             url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{doc_token}/nodes"
             res = requests.get(url, headers=headers, timeout=30)
@@ -268,23 +227,7 @@ def read_feishu_document(doc_type, doc_token):
                         title = node.get("title", "")
                         if title:
                             text_parts.append(f"# {title}")
-                    content = "\n".join(text_parts)
-                    return content
-            return None
-        
-        # 表格
-        elif doc_type == "sheets":
-            url = f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{doc_token}/values/Sheet1"
-            res = requests.get(url, headers=headers, timeout=30)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("code") == 0:
-                    values = data.get("data", {}).get("valueRange", {}).get("values", [])
-                    text_parts = []
-                    for row in values:
-                        text_parts.append(" | ".join([str(cell) for cell in row if cell]))
-                    content = "\n".join(text_parts)
-                    return content
+                    return "\n".join(text_parts)
             return None
         
         else:
@@ -293,8 +236,6 @@ def read_feishu_document(doc_type, doc_token):
             
     except Exception as e:
         logger.error(f"读取云文档异常: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
 
@@ -321,7 +262,6 @@ def send_reply(open_id, text):
     try:
         token = get_tenant_access_token()
         if not token:
-            logger.error("发送消息失败: 无法获取Token")
             return
         
         url = "https://open.feishu.cn/open-apis/im/v1/messages"
@@ -336,11 +276,8 @@ def send_reply(open_id, text):
         }
         
         res = requests.post(url, params={"receive_id_type": "open_id"}, headers=headers, json=data, timeout=10)
-        result = res.json()
-        if result.get("code") == 0:
+        if res.json().get("code") == 0:
             logger.info("✅ 消息发送成功")
-        else:
-            logger.error(f"发送消息失败: {result}")
     except Exception as e:
         logger.error(f"发送消息异常: {e}")
 
@@ -352,7 +289,7 @@ def send_file(open_id, file_path):
             send_reply(open_id, "❌ 获取Token失败")
             return
         
-        # 1. 上传文件
+        # 上传文件
         upload_url = "https://open.feishu.cn/open-apis/im/v1/files"
         headers = {"Authorization": f"Bearer {token}"}
         
@@ -366,16 +303,15 @@ def send_file(open_id, file_path):
         result = res.json()
         if result.get("code") != 0:
             logger.error(f"上传失败: {result}")
-            send_reply(open_id, f"❌ 上传文件失败: {result.get('msg', '未知错误')}")
+            send_reply(open_id, "❌ 上传文件失败")
             return
         
         file_token = result.get("data", {}).get("file_token")
         if not file_token:
-            logger.error(f"上传成功但未返回file_token: {result}")
-            send_reply(open_id, "❌ 上传文件失败，请重试")
+            send_reply(open_id, "❌ 上传文件失败")
             return
         
-        # 2. 发送文件消息
+        # 发送文件
         send_url = "https://open.feishu.cn/open-apis/im/v1/messages"
         headers = {
             "Authorization": f"Bearer {token}",
@@ -388,17 +324,13 @@ def send_file(open_id, file_path):
         }
         
         res = requests.post(send_url, params={"receive_id_type": "open_id"}, headers=headers, json=data, timeout=10)
-        result = res.json()
-        if result.get("code") == 0:
+        if res.json().get("code") == 0:
             logger.info("✅ 文件发送成功")
         else:
-            logger.error(f"发送文件失败: {result}")
-            send_reply(open_id, f"❌ 发送文件失败: {result.get('msg', '未知错误')}")
+            logger.error(f"发送文件失败: {res.json()}")
             
     except Exception as e:
         logger.error(f"发送文件异常: {e}")
-        import traceback
-        traceback.print_exc()
         send_reply(open_id, f"❌ 发送失败: {str(e)[:100]}")
 
 
