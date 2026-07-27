@@ -13,11 +13,7 @@ from pathlib import Path
 from flask import Flask, request
 import threading
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -27,9 +23,6 @@ APP_SECRET = os.getenv("APP_SECRET")
 VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN")
 
 
-# ==========================================
-# 懒加载函数
-# ==========================================
 def get_knowledge_parser():
     try:
         from knowledge_parser import generate_knowledge_list
@@ -39,10 +32,6 @@ def get_knowledge_parser():
         logger.error(f"❌ knowledge_parser 导入失败: {e}")
         return None
 
-
-# ==========================================
-# 路由
-# ==========================================
 
 @app.route("/", methods=["GET"])
 def health_check():
@@ -57,12 +46,10 @@ def feishu_webhook():
     try:
         data = request.get_json()
         
-        # URL验证
         if data.get("type") == "url_verification":
             logger.info("🔍 URL验证")
             return {"challenge": data["challenge"]}
         
-        # 解析消息
         header = data.get("header", {})
         event_type = header.get("event_type")
         
@@ -75,7 +62,6 @@ def feishu_webhook():
         sender_id = sender.get("sender_id", {}).get("open_id")
         msg_type = message.get("message_type")
         
-        # 处理文本消息
         if msg_type == "text":
             content_raw = message.get("content", "{}")
             content = json.loads(content_raw)
@@ -83,10 +69,9 @@ def feishu_webhook():
             logger.info(f"💬 用户消息: {user_text}")
             return handle_text_message(sender_id, user_text)
         
-        # 处理文件消息 - 直接提示改用云文档
         elif msg_type == "file":
-            logger.info("📎 收到文件消息（不再处理）")
-            send_reply(sender_id, "⚠️ 请改用云文档方式：\n\n1. 把 帮助教程.md 上传到飞书云文档\n2. 复制文档链接发给我")
+            logger.info("📎 收到文件消息")
+            send_reply(sender_id, "⚠️ 请改用云文档链接方式")
             return {"status": "ok"}, 200
         
         else:
@@ -100,16 +85,11 @@ def feishu_webhook():
         return {"msg": "error"}, 200
 
 
-# ==========================================
-# 消息处理函数
-# ==========================================
-
 def handle_text_message(sender_id, text):
-    """处理文本消息（命令）"""
+    """处理文本消息"""
     
     logger.info(f"📝 处理文本: {text}")
     
-    # 帮助命令
     if text in ["/帮助", "/help"]:
         help_text = """📖 知识月报机器人使用帮助
 
@@ -119,9 +99,7 @@ def handle_text_message(sender_id, text):
   3. 我返回 知识清单.xlsx
 
 【命令】
-  /帮助    - 显示本帮助
-
-有问题请联系管理员。"""
+  /帮助 - 显示本帮助"""
         send_reply(sender_id, help_text)
         return {"status": "ok"}, 200
     
@@ -140,7 +118,6 @@ def handle_text_message(sender_id, text):
         threading.Thread(target=handle_doc_link, args=(sender_id, doc_type, doc_token)).start()
         return {"status": "ok"}, 200
     
-    # 无意义消息
     else:
         reply = """👋 你好！我是知识文档解析助手。
 
@@ -151,23 +128,17 @@ def handle_text_message(sender_id, text):
         return {"status": "ok"}, 200
 
 
-# ==========================================
-# 云文档处理函数（异步）
-# ==========================================
-
 def handle_doc_link(sender_id, doc_type, doc_token):
     """处理云文档链接（异步）"""
     try:
-        send_reply(sender_id, "📄 正在读取云文档内容...")
-        
         doc_content = read_feishu_document(doc_type, doc_token)
         
         if doc_content is None:
-            send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确")
+            send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确\n3. 飞书开发者后台的 docx:document:readonly 权限是否已开启并发布")
             return
         
         if len(doc_content.strip()) < 50:
-            send_reply(sender_id, f"❌ 文档内容为空或过短（{len(doc_content)}字符），请检查文档内容")
+            send_reply(sender_id, f"❌ 文档内容为空或过短（{len(doc_content)}字符）")
             return
         
         generate_knowledge_list = get_knowledge_parser()
@@ -192,26 +163,55 @@ def handle_doc_link(sender_id, doc_type, doc_token):
         send_reply(sender_id, f"❌ 处理失败: {str(e)[:100]}")
 
 
-# ==========================================
-# 飞书云文档API
-# ==========================================
-
 def read_feishu_document(doc_type, doc_token):
-    """读取飞书云文档内容"""
+    """读取飞书云文档内容（带详细日志）"""
     try:
         token = get_tenant_access_token()
         if not token:
-            logger.error("获取Token失败")
+            logger.error("❌ 获取Token失败")
             return None
         
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         
-        # 知识库（Wiki）
-        if doc_type == "wiki":
-            # 获取知识库空间下的节点列表
-            url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{doc_token}/nodes"
+        logger.info(f"📥 开始读取文档: type={doc_type}, token={doc_token}")
+        
+        if doc_type == "docx":
+            url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks?page_size=200"
+            logger.info(f"📥 请求URL: {url}")
+            
             res = requests.get(url, headers=headers, timeout=30)
-            logger.info(f"📥 Wiki API 响应: {res.status_code}")
+            
+            logger.info(f"📥 响应状态码: {res.status_code}")
+            logger.info(f"📥 响应内容: {res.text[:800]}")
+            
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 0:
+                    blocks = data.get("data", {}).get("items", [])
+                    text_parts = []
+                    for block in blocks:
+                        block_type = block.get("block_type", 0)
+                        # 1=文本, 2=标题1, 3=标题2, 4=标题3
+                        if block_type in [1, 2, 3, 4]:
+                            text = block.get("text", "")
+                            if text:
+                                text_parts.append(text)
+                    content = "\n".join(text_parts)
+                    logger.info(f"✅ 读取文档成功，共 {len(content)} 字符，{len(blocks)} 个块")
+                    return content
+                else:
+                    logger.error(f"❌ API返回错误: code={data.get('code')}, msg={data.get('msg')}")
+                    return None
+            else:
+                logger.error(f"❌ HTTP错误: {res.status_code}")
+                return None
+        
+        elif doc_type == "wiki":
+            url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{doc_token}/nodes"
+            logger.info(f"📥 请求URL: {url}")
+            res = requests.get(url, headers=headers, timeout=30)
+            logger.info(f"📥 响应状态码: {res.status_code}")
+            logger.info(f"📥 响应内容: {res.text[:800]}")
             
             if res.status_code == 200:
                 data = res.json()
@@ -223,45 +223,13 @@ def read_feishu_document(doc_type, doc_token):
                         if title:
                             text_parts.append(f"# {title}")
                     content = "\n".join(text_parts)
-                    logger.info(f"📄 读取Wiki成功，共 {len(content)} 字符")
                     return content
-                else:
-                    logger.error(f"Wiki API 返回错误: {data}")
-                    return None
-            else:
-                logger.error(f"Wiki API HTTP错误: {res.status_code}, {res.text[:200]}")
-                return None
+            return None
         
-        # 文档（Docx）
-        elif doc_type == "docx":
-            url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks"
-            res = requests.get(url, headers=headers, timeout=30)
-            
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("code") == 0:
-                    blocks = data.get("data", {}).get("items", [])
-                    text_parts = []
-                    for block in blocks:
-                        block_type = block.get("block_type", 0)
-                        if block_type in [1, 2, 3]:
-                            text = block.get("text", "")
-                            if text:
-                                text_parts.append(text)
-                    content = "\n".join(text_parts)
-                    logger.info(f"📄 读取文档成功，共 {len(content)} 字符")
-                    return content
-                else:
-                    logger.error(f"文档API返回错误: {data}")
-                    return None
-            else:
-                logger.error(f"文档API HTTP错误: {res.status_code}")
-                return None
-        
-        # 表格
         elif doc_type == "sheets":
             url = f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{doc_token}/values/Sheet1"
             res = requests.get(url, headers=headers, timeout=30)
+            logger.info(f"📥 响应状态码: {res.status_code}")
             if res.status_code == 200:
                 data = res.json()
                 if data.get("code") == 0:
@@ -269,24 +237,19 @@ def read_feishu_document(doc_type, doc_token):
                     text_parts = []
                     for row in values:
                         text_parts.append(" | ".join([str(cell) for cell in row if cell]))
-                    content = "\n".join(text_parts)
-                    return content
+                    return "\n".join(text_parts)
             return None
         
         else:
-            logger.error(f"不支持的文档类型: {doc_type}")
+            logger.error(f"❌ 不支持的文档类型: {doc_type}")
             return None
             
     except Exception as e:
-        logger.error(f"读取云文档异常: {e}")
+        logger.error(f"❌ 读取云文档异常: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-
-# ==========================================
-# 飞书API工具函数
-# ==========================================
 
 def get_tenant_access_token():
     try:
@@ -294,58 +257,43 @@ def get_tenant_access_token():
         res = requests.post(url, json={"app_id": APP_ID, "app_secret": APP_SECRET}, timeout=10)
         data = res.json()
         if data.get("code") == 0:
+            logger.info("✅ Token获取成功")
             return data.get("tenant_access_token")
         else:
-            logger.error(f"获取Token失败: {data}")
+            logger.error(f"❌ 获取Token失败: {data}")
             return None
     except Exception as e:
-        logger.error(f"获取Token异常: {e}")
+        logger.error(f"❌ 获取Token异常: {e}")
         return None
 
 
 def send_reply(open_id, text):
-    """发送文本回复"""
     try:
         token = get_tenant_access_token()
         if not token:
-            logger.error("发送消息失败: 无法获取Token")
             return
         
         url = "https://open.feishu.cn/open-apis/im/v1/messages"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "receive_id": open_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": text})
-        }
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
         
         res = requests.post(url, params={"receive_id_type": "open_id"}, headers=headers, json=data, timeout=10)
-        result = res.json()
-        if result.get("code") == 0:
+        if res.json().get("code") == 0:
             logger.info("✅ 消息发送成功")
-        else:
-            logger.error(f"发送消息失败: {result}")
     except Exception as e:
         logger.error(f"发送消息异常: {e}")
 
 
 def send_file(open_id, file_path):
-    """发送文件"""
     try:
         token = get_tenant_access_token()
         if not token:
             send_reply(open_id, "❌ 获取Token失败")
             return
         
-        # 1. 上传文件
         upload_url = "https://open.feishu.cn/open-apis/im/v1/files"
         headers = {"Authorization": f"Bearer {token}"}
-        
         file_name = Path(file_path).name
-        logger.info(f"📤 上传文件: {file_name}")
         
         with open(file_path, 'rb') as f:
             files = {'file': (file_name, f, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
@@ -362,36 +310,20 @@ def send_file(open_id, file_path):
             send_reply(open_id, "❌ 上传文件失败")
             return
         
-        # 2. 发送文件
         send_url = "https://open.feishu.cn/open-apis/im/v1/messages"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "receive_id": open_id,
-            "msg_type": "file",
-            "content": json.dumps({"file_token": file_token})
-        }
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        data = {"receive_id": open_id, "msg_type": "file", "content": json.dumps({"file_token": file_token})}
         
         res = requests.post(send_url, params={"receive_id_type": "open_id"}, headers=headers, json=data, timeout=10)
-        result = res.json()
-        if result.get("code") == 0:
+        if res.json().get("code") == 0:
             logger.info("✅ 文件发送成功")
         else:
-            logger.error(f"发送文件失败: {result}")
-            send_reply(open_id, "❌ 发送文件失败")
+            logger.error(f"发送文件失败: {res.json()}")
             
     except Exception as e:
         logger.error(f"发送文件异常: {e}")
-        import traceback
-        traceback.print_exc()
         send_reply(open_id, f"❌ 发送失败: {str(e)[:100]}")
 
-
-# ==========================================
-# 启动
-# ==========================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
