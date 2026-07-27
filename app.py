@@ -131,10 +131,12 @@ def handle_text_message(sender_id, text):
 def handle_doc_link(sender_id, doc_type, doc_token):
     """处理云文档链接（异步）"""
     try:
+        send_reply(sender_id, "📄 正在读取云文档内容...")
+        
         doc_content = read_feishu_document(doc_type, doc_token)
         
         if doc_content is None:
-            send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确\n3. 飞书开发者后台的 docx:document:readonly 权限是否已开启并发布")
+            send_reply(sender_id, "❌ 读取云文档失败，请检查：\n1. 文档是否已添加机器人为协作者\n2. 文档链接是否正确")
             return
         
         if len(doc_content.strip()) < 50:
@@ -164,7 +166,7 @@ def handle_doc_link(sender_id, doc_type, doc_token):
 
 
 def read_feishu_document(doc_type, doc_token):
-    """读取飞书云文档内容（带详细日志）"""
+    """读取飞书云文档内容"""
     try:
         token = get_tenant_access_token()
         if not token:
@@ -182,20 +184,28 @@ def read_feishu_document(doc_type, doc_token):
             res = requests.get(url, headers=headers, timeout=30)
             
             logger.info(f"📥 响应状态码: {res.status_code}")
-            logger.info(f"📥 响应内容: {res.text[:800]}")
             
             if res.status_code == 200:
                 data = res.json()
                 if data.get("code") == 0:
                     blocks = data.get("data", {}).get("items", [])
                     text_parts = []
+                    
                     for block in blocks:
                         block_type = block.get("block_type", 0)
                         # 1=文本, 2=标题1, 3=标题2, 4=标题3
                         if block_type in [1, 2, 3, 4]:
-                            text = block.get("text", "")
-                            if text:
-                                text_parts.append(text)
+                            text_data = block.get("text", {})
+                            if isinstance(text_data, dict):
+                                elements = text_data.get("elements", [])
+                                for elem in elements:
+                                    if isinstance(elem, dict):
+                                        text_run = elem.get("text_run", {})
+                                        if isinstance(text_run, dict):
+                                            content = text_run.get("content", "")
+                                            if content:
+                                                text_parts.append(content)
+                    
                     content = "\n".join(text_parts)
                     logger.info(f"✅ 读取文档成功，共 {len(content)} 字符，{len(blocks)} 个块")
                     return content
@@ -203,7 +213,7 @@ def read_feishu_document(doc_type, doc_token):
                     logger.error(f"❌ API返回错误: code={data.get('code')}, msg={data.get('msg')}")
                     return None
             else:
-                logger.error(f"❌ HTTP错误: {res.status_code}")
+                logger.error(f"❌ HTTP错误: {res.status_code}, {res.text[:200]}")
                 return None
         
         elif doc_type == "wiki":
@@ -211,7 +221,6 @@ def read_feishu_document(doc_type, doc_token):
             logger.info(f"📥 请求URL: {url}")
             res = requests.get(url, headers=headers, timeout=30)
             logger.info(f"📥 响应状态码: {res.status_code}")
-            logger.info(f"📥 响应内容: {res.text[:800]}")
             
             if res.status_code == 200:
                 data = res.json()
