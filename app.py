@@ -65,13 +65,12 @@ def feishu_webhook():
         sender = event.get("sender", {})
         sender_id = sender.get("sender_id", {}).get("open_id")
         msg_type = message.get("message_type")
-        chat_type = message.get("chat_type")
         
-        # 3. 只处理文本消息和文件消息
-        if msg_type not in ["text", "file"]:
-            return {"msg": "忽略"}, 200
+        # 3. 打印完整消息用于调试
+        logger.info(f"📨 msg_type: {msg_type}")
+        logger.info(f"📨 完整message: {json.dumps(message, ensure_ascii=False)[:500]}")
         
-        # 4. 处理消息
+        # 4. 处理文本消息
         if msg_type == "text":
             content_raw = message.get("content", "{}")
             content = json.loads(content_raw)
@@ -79,15 +78,40 @@ def feishu_webhook():
             logger.info(f"💬 用户消息: {user_text}")
             return handle_text_message(sender_id, user_text)
         
+        # 5. 处理文件消息（飞书文件消息类型是 "file"）
         elif msg_type == "file":
+            logger.info("📎 收到文件消息")
             content_raw = message.get("content", "{}")
+            logger.info(f"📎 content_raw: {content_raw}")
+            
             content = json.loads(content_raw)
+            logger.info(f"📎 解析后content: {json.dumps(content, ensure_ascii=False)}")
+            
+            # 获取文件信息
             file_token = content.get("file_token")
             file_name = content.get("file_name", "")
-            logger.info(f"📎 收到文件: {file_name}")
+            
+            # 如果没获取到，尝试从其他字段获取
+            if not file_token:
+                # 飞书可能把文件信息放在 media 字段
+                media = content.get("media", {})
+                if isinstance(media, dict):
+                    file_token = media.get("file_token") or media.get("media_id")
+                    file_name = media.get("file_name", "")
+            
+            logger.info(f"📎 file_token: {file_token}")
+            logger.info(f"📎 file_name: {file_name}")
+            
+            if not file_token:
+                send_reply(sender_id, "❌ 无法获取文件信息，请重新发送")
+                return {"status": "ok"}, 200
+            
             return handle_file_message(sender_id, file_token, file_name)
         
-        return {"status": "ok"}, 200
+        # 6. 其他消息类型（图片、音频等）
+        else:
+            logger.info(f"⏭️ 忽略消息类型: {msg_type}")
+            return {"msg": "忽略"}, 200
         
     except Exception as e:
         logger.error(f"❌ 处理消息异常: {e}")
@@ -108,10 +132,8 @@ def handle_text_message(sender_id, text):
 【可用命令】
 直接发送文件：
   📄 .md文件 → 生成知识清单
-  📊 .xlsx文件 → 会话问题分类
 
 【其他命令】
-  /健康度  - 执行健康度检测（即将上线）
   /帮助    - 显示本帮助
 
 【使用示例】
@@ -123,14 +145,9 @@ def handle_text_message(sender_id, text):
         send_reply(sender_id, help_text)
         return {"status": "ok"}, 200
     
-    # 健康度命令（预留）
-    if text in ["/健康度", "/health"]:
-        send_reply(sender_id, "🔍 健康度检测功能开发中，敬请期待...")
-        return {"status": "ok"}, 200
-    
     # 无意义消息
     else:
-        reply = """👋 你好！我是知识月报机器人。
+        reply = """👋 你好！我是知识文档解析助手。
 
 我能帮你：
 ✅ 把 .md 文件转成 Excel 知识清单
@@ -148,8 +165,13 @@ def handle_text_message(sender_id, text):
 def handle_file_message(sender_id, file_token, file_name):
     """处理文件消息"""
     
-    # 1. 检查文件类型
-    if not file_name.endswith(".md"):
+    logger.info("=" * 60)
+    logger.info(f"📎 开始处理文件: {file_name}")
+    logger.info(f"📎 file_token: {file_token}")
+    logger.info("=" * 60)
+    
+    # 1. 检查文件类型（忽略大小写）
+    if not file_name.lower().endswith(".md"):
         send_reply(sender_id, f"❌ 暂不支持 {file_name} 格式，请发送 .md 文件")
         return {"status": "ok"}, 200
     
@@ -161,15 +183,20 @@ def handle_file_message(sender_id, file_token, file_name):
         send_reply(sender_id, "❌ 文件下载失败，请稍后重试")
         return {"status": "ok"}, 200
     
-    # 3. 生成知识清单
-    send_reply(sender_id, "📊 正在生成知识清单，请稍候...")
+    # 3. 检查内容是否为空
+    if not file_content or len(file_content.strip()) < 10:
+        send_reply(sender_id, "❌ 文件内容为空或格式不正确，请检查文件")
+        return {"status": "ok"}, 200
+    
+    # 4. 生成知识清单
+    send_reply(sender_id, "📊 正在生成知识清单，请稍候...（文件较大可能需要1-2分钟）")
     result = generate_knowledge_list(file_content, file_name)
     
     if not result["success"]:
         send_reply(sender_id, f"❌ 生成失败：{result['error']}")
         return {"status": "ok"}, 200
     
-    # 4. 发送结果
+    # 5. 发送结果
     send_reply(sender_id, f"✅ 知识清单生成完成！共 {result['count']} 条知识")
     
     # 发送文件
@@ -203,24 +230,30 @@ def download_feishu_file(file_token):
         if not token:
             return None
         
-        url = f"https://open.feishu.cn/open-apis/drive/v1/files/{file_token}/download"
+        url = f"https://open.feishu.cn/open-apis/im/v1/files/{file_token}"
         headers = {"Authorization": f"Bearer {token}"}
         
+        logger.info(f"📥 正在下载文件: {file_token}")
         res = requests.get(url, headers=headers, timeout=30)
+        
+        logger.info(f"📥 下载响应状态码: {res.status_code}")
         
         if res.status_code == 200:
             # 尝试解码为文本
             try:
-                return res.text
-            except:
-                # 如果是二进制文件，返回None
-                logger.error("文件不是文本格式")
+                content = res.text
+                logger.info(f"📥 文件大小: {len(content)} 字符")
+                return content
+            except Exception as e:
+                logger.error(f"解码文件失败: {e}")
                 return None
         else:
-            logger.error(f"下载文件失败: {res.status_code}")
+            logger.error(f"下载文件失败: {res.status_code}, {res.text[:200] if res.text else 'empty'}")
             return None
     except Exception as e:
         logger.error(f"下载文件异常: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -263,22 +296,33 @@ def send_file(open_id, file_path):
     try:
         token = get_tenant_access_token()
         if not token:
+            send_reply(open_id, "❌ 获取Token失败，无法发送文件")
             return
         
         # 1. 上传文件获取file_token
         upload_url = "https://open.feishu.cn/open-apis/im/v1/files"
         headers = {"Authorization": f"Bearer {token}"}
         
+        file_name = Path(file_path).name
+        logger.info(f"📤 正在上传文件: {file_name}")
+        
         with open(file_path, 'rb') as f:
-            files = {'file': (Path(file_path).name, f, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
+            files = {'file': (file_name, f, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
             res = requests.post(upload_url, headers=headers, files=files, timeout=30)
         
         result = res.json()
+        logger.info(f"📤 上传结果: {result}")
+        
         if result.get("code") != 0:
             logger.error(f"上传文件失败: {result}")
+            send_reply(open_id, f"❌ 上传文件失败: {result.get('msg', '未知错误')}")
             return
         
         file_token = result.get("data", {}).get("file_token")
+        if not file_token:
+            logger.error(f"上传成功但未返回file_token: {result}")
+            send_reply(open_id, "❌ 上传文件失败，请重试")
+            return
         
         # 2. 发送文件消息
         send_url = "https://open.feishu.cn/open-apis/im/v1/messages"
@@ -304,15 +348,21 @@ def send_file(open_id, file_path):
             logger.info("✅ 文件发送成功")
         else:
             logger.error(f"发送文件失败: {result}")
+            send_reply(open_id, f"❌ 发送文件失败: {result.get('msg', '未知错误')}")
     except Exception as e:
         logger.error(f"发送文件异常: {e}")
+        import traceback
+        traceback.print_exc()
+        send_reply(open_id, f"❌ 发送文件异常: {str(e)[:100]}")
 
 
 # ==================== 启动 ====================
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
     logger.info("=" * 60)
     logger.info("🚀 知识月报机器人启动")
     logger.info(f"📱 APP_ID: {APP_ID[:15] if APP_ID else 'NOT SET'}...")
+    logger.info(f"🔌 PORT: {port}")
     logger.info("=" * 60)
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)
